@@ -24,10 +24,16 @@ python3 Scripts/install_local.py
 ## 实验包
 
 ```sh
-python3 Scripts/package_experimental.py
+python3 -m venv .venv-packaging
+.venv-packaging/bin/python -m pip install -r Scripts/requirements-packaging.txt
+.venv-packaging/bin/python Scripts/package_experimental.py
 ```
 
 脚本使用本机配置做优化构建，把 app、三个样例和说明文件打包为 `dist/DeskKit-experimental-YYYY-MM-DD-arm64.dmg`，同时生成样例 ZIP 和 SHA-256 校验文件。它不会安装、启动、上传或公证应用；`Release` 在这里仅是 Xcode 的编译配置。
+
+安装窗口使用固定的图标布局和 Retina 背景；把左侧 DeskKit 拖到右侧 Applications 即可。三个样例的 ZIP、许可和说明放在「样例与说明」文件夹，应用内仍自带相同样例。
+
+仅重新制作安装界面时，可传入 `--app /path/to/DeskKit.app --output dist/Installer`，复用已有签名应用。打包使用 [dmgbuild](https://dmgbuild.readthedocs.io/) 写入 Finder 布局，无需控制 Finder。这些 Python 库仅用于打包，不随应用分发。
 
 若命令行工具未选中完整 Xcode，打包脚本会尝试 `/Applications/Xcode.app`；其他安装位置请通过 `DEVELOPER_DIR` 指定。它不会修改系统的 Xcode 选择。
 
@@ -39,5 +45,6 @@ python3 Scripts/package_experimental.py
 
 - `python3 Scripts/generate_project.py`：更新工程文件，个人签名仍从忽略的本地配置读取。
 - `python3 Scripts/generate_app_icon.py`：从 Artwork 中的原图生成应用图标尺寸。
+- `Scripts/generate_installer_artwork.swift`：生成安装界面的背景和资料文件夹图标。
 - `python3 Scripts/package_examples.py`：重新打包三个经过检查的样例。
 - `Scripts/test.sh`：现有基础检查入口，需自行按环境运行。

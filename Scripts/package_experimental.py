@@ -52,24 +52,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--derived-data', type=Path, default=ROOT / 'DerivedData/Experimental')
     parser.add_argument('--output', type=Path, default=ROOT / 'dist')
+    parser.add_argument('--app', type=Path, help='Repackage an existing signed app without rebuilding it')
     args = parser.parse_args()
+    try:
+        from dmgbuild import build_dmg
+    except ImportError:
+        raise SystemExit('Install Scripts/requirements-packaging.txt in a Python virtual environment first.')
     output = args.output.expanduser().resolve()
     derived = args.derived_data.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     stamp = date.today().isoformat()
-    app = derived / 'Build/Products/Release/DeskKit.app'
-    log = output / 'build-experimental.log'
-    swift_flags = '$(inherited) ' + shlex.join(['-debug-prefix-map', f'{ROOT}=/DeskKit', '-file-compilation-dir', '/DeskKit'])
-    command = ['/usr/bin/xcrun', 'xcodebuild', '-project', ROOT / 'DeskKit.xcodeproj', '-scheme', 'DeskKit',
-               '-configuration', 'Release', '-derivedDataPath', derived, '-arch', 'arm64',
-               'ONLY_ACTIVE_ARCH=YES', 'ENABLE_DEBUG_DYLIB=NO', 'SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO',
-               'DEPLOYMENT_POSTPROCESSING=YES', 'STRIP_INSTALLED_PRODUCT=YES', 'COPY_PHASE_STRIP=YES',
-               'OTHER_SWIFT_FLAGS=' + swift_flags, 'build']
-    with log.open('w') as handle:
-        result = subprocess.run([str(item) for item in command], cwd=ROOT, env=xcode_environment(), stdout=handle, stderr=subprocess.STDOUT)
-    if result.returncode:
-        raise SystemExit(f'Build failed. Inspect the local log: {log}')
-    print('Optimized arm64 build completed.', flush=True)
+    app = args.app.expanduser().resolve() if args.app else derived / 'Build/Products/Release/DeskKit.app'
+    if not args.app:
+        log = output / 'build-experimental.log'
+        swift_flags = '$(inherited) ' + shlex.join(['-debug-prefix-map', f'{ROOT}=/DeskKit', '-file-compilation-dir', '/DeskKit'])
+        command = ['/usr/bin/xcrun', 'xcodebuild', '-project', ROOT / 'DeskKit.xcodeproj', '-scheme', 'DeskKit',
+                   '-configuration', 'Release', '-derivedDataPath', derived, '-arch', 'arm64',
+                   'ONLY_ACTIVE_ARCH=YES', 'ENABLE_DEBUG_DYLIB=NO', 'SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO',
+                   'DEPLOYMENT_POSTPROCESSING=YES', 'STRIP_INSTALLED_PRODUCT=YES', 'COPY_PHASE_STRIP=YES',
+                   'OTHER_SWIFT_FLAGS=' + swift_flags, 'build']
+        with log.open('w') as handle:
+            result = subprocess.run([str(item) for item in command], cwd=ROOT, env=xcode_environment(), stdout=handle, stderr=subprocess.STDOUT)
+        if result.returncode:
+            raise SystemExit(f'Build failed. Inspect the local log: {log}')
+        print('Optimized arm64 build completed.', flush=True)
     check_package(app)
     examples = package_examples(output / 'DeskKit-examples.zip')
     dmg = output / f'DeskKit-experimental-{stamp}-arm64.dmg'
@@ -77,11 +83,13 @@ def main():
         staging = Path(directory) / 'Disk'
         staging.mkdir()
         run(['/usr/bin/ditto', '--norsrc', '--noextattr', '--noqtn', app, staging / 'DeskKit.app'])
-        os.symlink('/Applications', staging / 'Applications')
-        shutil.copyfile(examples, staging / examples.name)
-        shutil.copyfile(ROOT / 'LICENSE', staging / 'LICENSE.txt')
-        (staging / '请先阅读.txt').write_text(
-            'DeskKit — Andreas 的个人实验项目\n\n'
+        extras = staging / '样例与说明'
+        extras.mkdir()
+        shutil.copyfile(examples, extras / examples.name)
+        shutil.copyfile(ROOT / 'LICENSE', extras / 'LICENSE.txt')
+        (extras / '请先阅读.txt').write_text(
+            'DeskKit\n\n'
+            '不保证稳定性、兼容性或长期维护，有需求者自行下载源码自定义构建。\n\n'
             '将 DeskKit.app 拖入 Applications，再从应用程序目录打开。\n'
             '这是 Apple Silicon 实验包，最低 macOS 14，不是正式版。\n'
             '使用开发签名，没有 Apple 公证，可能被 Gatekeeper 阻止，或无法加载桌面扩展。\n'
@@ -94,15 +102,18 @@ def main():
             '只启用可信组件，本地 command 数据源可以读取文件或联网。\n\n'
             '源码与说明：https://github.com/Andreaslinshy/DeskKit\n')
         check_package(staging / 'DeskKit.app')
-        run(['/usr/bin/hdiutil', 'create', '-volname', 'DeskKit Experimental', '-srcfolder', staging,
-             '-format', 'UDZO', '-ov', '-o', dmg])
+        artwork = Path(directory) / 'Artwork'
+        run(['/usr/bin/xcrun', 'swift', ROOT / 'Scripts/generate_installer_artwork.swift', artwork, extras],
+            env=xcode_environment())
+        build_dmg(str(dmg), 'DeskKit', settings_file=str(ROOT / 'Scripts/dmg_settings.py'),
+                  defines={'staging': str(staging), 'artwork': str(artwork)})
     checksums = output / 'SHA256SUMS.txt'
     checksums.write_text(''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in [dmg, examples]))
     # Xcode registers build products. Keep this packaging copy from competing with installed widgets.
     lsregister = Path('/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister')
     if not lsregister.exists():
         lsregister = Path('/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister')
-    if lsregister.exists():
+    if not args.app and lsregister.exists():
         result = subprocess.run([str(lsregister), '-u', str(app)], capture_output=True, text=True)
         if result.returncode and '-10814' not in result.stdout + result.stderr:
             print('Note: the temporary build registration could not be removed.')

@@ -29,3 +29,6 @@ __pycache__/
 *.log
 diagnostics*.json
 snapshot-*.json
+
+# Isolated packaging tools
+/.venv-packaging/
