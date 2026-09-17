@@ -1,0 +1,16 @@
+{
+  "id": "codex-quota",
+  "name": "Codex 额度",
+  "description": "查看剩余额度与下一次重置时间。",
+  "symbol": "terminal",
+  "version": 1,
+  "refreshSeconds": 60,
+  "source": {
+    "kind": "codex",
+    "executable": ""
+  },
+  "script": "render.js",
+  "defaultEnabled": false,
+  "menuBar": false,
+  "widget": true
+}

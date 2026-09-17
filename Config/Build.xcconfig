@@ -1,0 +1,7 @@
+// Public build defaults. Put personal signing values in the ignored Local.xcconfig.
+DESKKIT_BUNDLE_ID = com.andreas.DeskKit
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Apple Development
+DESKKIT_APP_GROUP = $(DEVELOPMENT_TEAM).$(DESKKIT_BUNDLE_ID)
+#include? "Local.xcconfig"

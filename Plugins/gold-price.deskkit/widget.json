@@ -1,0 +1,17 @@
+{
+  "id": "gold-price",
+  "name": "国内金价",
+  "description": "查看黄金行情、涨跌幅和数据时间。",
+  "symbol": "chart.line.uptrend.xyaxis",
+  "version": 1,
+  "refreshSeconds": 60,
+  "source": {
+    "kind": "http",
+    "url": "https://www.huilvbiao.com/api/gold_indexApi",
+    "format": "text"
+  },
+  "script": "render.js",
+  "defaultEnabled": false,
+  "menuBar": false,
+  "widget": true
+}

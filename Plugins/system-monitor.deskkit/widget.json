@@ -1,0 +1,16 @@
+{
+  "id": "system-monitor",
+  "name": "系统状态",
+  "description": "网速常驻菜单栏，点击查看 CPU、内存和磁盘。",
+  "symbol": "network",
+  "version": 1,
+  "refreshSeconds": 1,
+  "source": {
+    "kind": "system",
+    "interface": ""
+  },
+  "script": "render.js",
+  "defaultEnabled": false,
+  "menuBar": true,
+  "widget": false
+}

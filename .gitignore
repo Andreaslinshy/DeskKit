@@ -1,0 +1,31 @@
+# Local signing, credentials, and private configuration
+/Config/Local.xcconfig
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.key
+*.pem
+*.mobileprovision
+*.provisionprofile
+
+# Generated applications, disk images, archives, and build state
+/Build/
+/DerivedData/
+/dist/
+.build/
+*.dSYM/
+*.xcarchive/
+*.dmg
+*.app/
+
+# Per-user IDE/OS state and runtime data
+xcuserdata/
+*.xcuserstate
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+diagnostics*.json
+snapshot-*.json
