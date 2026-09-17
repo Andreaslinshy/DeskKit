@@ -26,7 +26,8 @@ func bitmap(size: NSSize, scale: Int, draw: (CGContext) -> Void) -> NSBitmapImag
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale,
         pixelsHigh: Int(size.height) * scale, bitsPerSample: 8, samplesPerPixel: 4,
         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-    rep.size = size
+    // Draw in pixel space first. Setting rep.size here makes AppKit apply
+    // the Retina scale before our explicit transform, scaling the artwork twice.
     let graphics = NSGraphicsContext(bitmapImageRep: rep)!
     NSGraphicsContext.saveGraphicsState()
     let context = graphics.cgContext
@@ -35,6 +36,7 @@ func bitmap(size: NSSize, scale: Int, draw: (CGContext) -> Void) -> NSBitmapImag
     NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
     draw(context)
     NSGraphicsContext.restoreGraphicsState()
+    rep.size = size
     return rep
 }
 func background(_ context: CGContext) {

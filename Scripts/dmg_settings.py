@@ -9,7 +9,8 @@ files = [str(staging / 'DeskKit.app'), str(staging / '样例与说明')]
 symlinks = {'Applications': '/Applications'}
 icon = str(staging / 'DeskKit.app/Contents/Resources/AppIcon.icns')
 background = str(artwork / 'background.png')
-window_rect = ((160, 120), (760, 560))
+# Finder bounds include the title bar; leave 560 points for the artwork.
+window_rect = ((160, 120), (760, 592))
 show_status_bar = False
 show_tab_view = False
 show_toolbar = False
