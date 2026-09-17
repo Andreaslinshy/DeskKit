@@ -12,6 +12,10 @@
 - 菜单栏适合网速等高频数据；桌面小组件的刷新由 macOS 调度，不保证实时。
 - 在应用内编辑脚本与配置，预览草稿，确认保存后才影响正在使用的组件。
 
+![DeskKit 桌面小组件与菜单栏效果](docs/images/deskkit-desktop.png)
+
+图中左下方的 Codex 额度卡片和右上方的系统状态面板由 DeskKit 提供，其余为 macOS 或其他应用内容。
+
 ## 三个参考样例
 
 [下载样例包](Examples/DeskKit-examples.zip) · [查看样例源码](Plugins) · [组件编写说明](PluginGuide.md)
