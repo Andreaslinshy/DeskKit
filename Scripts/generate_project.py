@@ -18,7 +18,7 @@ for path in sorted(list(root.glob('DeskKit/*.swift'))+list(root.glob('Shared/*.s
 for path,typ in [('Plugins','folder'),('PluginGuide.md','net.daringfireball.markdown'),('DeskKit/Assets.xcassets','folder.assetcatalog'),('Config/Build.xcconfig','text.xcconfig'),('DeskKit/Info.plist','text.plist.xml'),('DeskKit/DeskKit.entitlements','text.plist.entitlements'),('DeskKitWidgets/Info.plist','text.plist.xml'),('DeskKitWidgets/DeskKitWidgets.entitlements','text.plist.entitlements')]:
     refs[path]=add(path,'PBXFileReference',lastKnownFileType=typ,path=path,sourceTree='<group>')
 products=[];targets=[]
-base={'SDKROOT':'macosx','MACOSX_DEPLOYMENT_TARGET':'14.0','SWIFT_VERSION':'5.0','CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES','SWIFT_STRICT_CONCURRENCY':'minimal','REGISTER_APP_GROUPS':'NO','ENABLE_HARDENED_RUNTIME':'YES','COMBINE_HIDPI_IMAGES':'YES','CURRENT_PROJECT_VERSION':'3','MARKETING_VERSION':'0.1.0'}
+base={'SDKROOT':'macosx','MACOSX_DEPLOYMENT_TARGET':'14.0','SWIFT_VERSION':'5.0','CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES','SWIFT_STRICT_CONCURRENCY':'minimal','REGISTER_APP_GROUPS':'NO','ENABLE_HARDENED_RUNTIME':'YES','COMBINE_HIDPI_IMAGES':'YES','CURRENT_PROJECT_VERSION':'4','MARKETING_VERSION':'0.1.1'}
 for name in ['DeskKitWidgets','DeskKit']:
     app=name=='DeskKit'
     product=add(name+'product','PBXFileReference',explicitFileType='wrapper.application' if app else 'wrapper.app-extension',includeInIndex=0,path=name+('.app' if app else '.appex'),sourceTree='BUILT_PRODUCTS_DIR');products.append(product)

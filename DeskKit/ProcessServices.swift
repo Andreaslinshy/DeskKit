@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import JavaScriptCore
 
 enum ChildProcessEnvironment {
@@ -21,10 +22,93 @@ struct ProcessOutput {
     var status: Int32
 }
 
+// Pipe() cannot report descriptor exhaustion through a throwing initializer.
+// Allocate explicitly so exhausted resources become an ordinary component error.
+private struct CheckedProcessPipe {
+    let reading: FileHandle
+    let writing: FileHandle
+
+    init() throws {
+        var descriptors: [Int32] = [-1, -1]
+        guard Darwin.pipe(&descriptors) == 0 else { throw Self.systemError() }
+        do {
+            for descriptor in descriptors {
+                guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) != -1 else { throw Self.systemError() }
+            }
+            // A child that closes stdin must produce EPIPE, not terminate DeskKit.
+            guard fcntl(descriptors[1], F_SETNOSIGPIPE, 1) != -1 else { throw Self.systemError() }
+        } catch {
+            Darwin.close(descriptors[0]); Darwin.close(descriptors[1])
+            throw error
+        }
+        reading = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+        writing = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+    }
+
+    static func systemError(_ code: Int32 = errno) -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: nil)
+    }
+
+    static func makeNonblocking(_ handle: FileHandle) throws {
+        let flags = fcntl(handle.fileDescriptor, F_GETFL)
+        guard flags != -1, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
+            throw systemError()
+        }
+    }
+}
+
+// Reading and teardown run on the owner's serial queue. Close only after GCD has
+// released the source, so a recycled descriptor cannot be read by an old callback.
+private final class ProcessPipeReader {
+    private var source: DispatchSourceRead?
+    private let receive: (Result<Data, Error>) -> Void
+
+    init(handle: FileHandle, queue: DispatchQueue, cleanup: DispatchGroup, receive: @escaping (Result<Data, Error>) -> Void) throws {
+        try CheckedProcessPipe.makeNonblocking(handle)
+        self.receive = receive
+        let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
+        self.source = source
+        source.setEventHandler { [weak self] in self?.drain() }
+        cleanup.enter()
+        source.setCancelHandler { try? handle.close(); cleanup.leave() }
+        source.resume()
+    }
+
+    func cancel() {
+        source?.cancel()
+        source = nil
+    }
+
+    private func drain() {
+        var bytes = [UInt8](repeating: 0, count: 16_384)
+        // Yield regularly even when stderr is continuously producing output.
+        for _ in 0..<16 {
+            guard let source else { return }
+            let count = bytes.withUnsafeMutableBytes { Darwin.read(Int32(source.handle), $0.baseAddress!, $0.count) }
+            if count > 0 {
+                receive(.success(Data(bytes.prefix(count))))
+            } else if count == 0 {
+                cancel(); receive(.success(Data())); return
+            } else {
+                let code = errno
+                if code == EINTR { continue }
+                if code == EAGAIN || code == EWOULDBLOCK { return }
+                cancel(); receive(.failure(CheckedProcessPipe.systemError(code))); return
+            }
+        }
+    }
+
+    deinit { source?.cancel() }
+}
+
 final class CommandJob: @unchecked Sendable {
     private let queue = DispatchQueue(label: "DeskKit.Command")
     private let process = Process()
-    private let output = Pipe(), errors = Pipe(), input = Pipe()
+    private let ioCleanup = DispatchGroup()
+    private var output: ProcessPipeReader?, errors: ProcessPipeReader?
+    private var input: DispatchSourceWrite?
+    private var inputSuspended = false
+    private var request = Data(), requestOffset = 0
     private var stdout = Data(), stderr = Data()
     private var continuation: CheckedContinuation<ProcessOutput, Error>?
     private var completed = false
@@ -36,6 +120,8 @@ final class CommandJob: @unchecked Sendable {
     static func run(executable: URL, arguments: [String], directory: URL? = nil, input: Data? = nil,
                     timeout: Double = 15, responseID: Int? = nil) async throws -> ProcessOutput {
         let job = CommandJob()
+        // Callbacks are weak. The awaiting call owns the job until it completes.
+        defer { withExtendedLifetime(job) {} }
         return try await withCheckedThrowingContinuation { continuation in
             job.queue.async {
                 job.continuation = continuation
@@ -44,32 +130,84 @@ final class CommandJob: @unchecked Sendable {
         }
     }
     private func start(_ executable: URL, _ arguments: [String], _ directory: URL?, _ request: Data?, _ seconds: Double, _ responseID: Int?) {
-        process.executableURL = executable; process.arguments = arguments; process.currentDirectoryURL = directory
-        process.standardOutput = output; process.standardError = errors; process.standardInput = input
-        process.environment = ChildProcessEnvironment.values
         stopOnResponseID = responseID
-        output.fileHandleForReading.readabilityHandler = { [self] handle in
-            let data = handle.availableData
-            queue.async { self.readOutput(data) }
-        }
-        errors.fileHandleForReading.readabilityHandler = { [self] handle in
-            let data = handle.availableData
-            queue.async { self.readError(data) }
-        }
-        process.terminationHandler = { [self] process in queue.async {
-            self.exitStatus = process.terminationStatus; self.completeIfExited()
-        } }
-        let deadline = DispatchWorkItem { [self] in finish(.failure(DeskKitError.message("数据源请求超时（\(Int(seconds)) 秒）。"))) }
-        timeout = deadline; queue.asyncAfter(deadline: .now() + seconds, execute: deadline)
+        self.request = request ?? Data()
+        process.executableURL = executable; process.arguments = arguments; process.currentDirectoryURL = directory
+        process.environment = ChildProcessEnvironment.values
         do {
+            let stdoutPipe = try CheckedProcessPipe(), stderrPipe = try CheckedProcessPipe(), stdinPipe = try CheckedProcessPipe()
+            // Process receives FileHandles, so we explicitly close the parent's
+            // copies of the child's ends on both launch success and launch failure.
+            defer {
+                try? stdoutPipe.writing.close(); try? stderrPipe.writing.close(); try? stdinPipe.reading.close()
+            }
+            process.standardOutput = stdoutPipe.writing; process.standardError = stderrPipe.writing
+            process.standardInput = stdinPipe.reading
+            output = try ProcessPipeReader(handle: stdoutPipe.reading, queue: queue, cleanup: ioCleanup) { [weak self] result in
+                switch result {
+                case .success(let data): self?.readOutput(data)
+                case .failure(let error): self?.finish(.failure(error))
+                }
+            }
+            errors = try ProcessPipeReader(handle: stderrPipe.reading, queue: queue, cleanup: ioCleanup) { [weak self] result in
+                switch result {
+                case .success(let data): self?.readError(data)
+                case .failure(let error): self?.finish(.failure(error))
+                }
+            }
+            try CheckedProcessPipe.makeNonblocking(stdinPipe.writing)
+            let writer = DispatchSource.makeWriteSource(fileDescriptor: stdinPipe.writing.fileDescriptor, queue: queue)
+            let inputHandle = stdinPipe.writing
+            let cleanup = ioCleanup
+            cleanup.enter()
+            writer.setCancelHandler { try? inputHandle.close(); cleanup.leave() }
+            writer.setEventHandler { [weak self] in self?.writeInput() }
+            input = writer; writer.resume()
+            process.terminationHandler = { [weak self] process in
+                self?.queue.async { [weak self] in
+                    self?.exitStatus = process.terminationStatus; self?.completeIfExited()
+                }
+            }
+            // Do not create job -> timeout -> job. cancel() alone doesn't sever ownership.
+            let deadline = DispatchWorkItem { [weak self] in
+                self?.finish(.failure(DeskKitError.message("数据源请求超时（\(Int(seconds)) 秒）。")))
+            }
+            timeout = deadline; queue.asyncAfter(deadline: .now() + seconds, execute: deadline)
             try process.run()
-            if let request { try input.fileHandleForWriting.write(contentsOf: request) }
-            if responseID == nil { try? input.fileHandleForWriting.close() }
         } catch { finish(.failure(error)) }
+    }
+    private func writeInput() {
+        guard !completed, let input else { return }
+        // A child that stops reading must not block this queue and its timeout.
+        while requestOffset < request.count {
+            let offset = requestOffset
+            let written = request.withUnsafeBytes {
+                Darwin.write(Int32(input.handle), $0.baseAddress!.advanced(by: offset), $0.count - offset)
+            }
+            if written > 0 { requestOffset += written; continue }
+            let code = written == 0 ? EIO : errno
+            if code == EINTR { continue }
+            if code == EAGAIN || code == EWOULDBLOCK { return }
+            finish(.failure(CheckedProcessPipe.systemError(code))); return
+        }
+        request = Data(); requestOffset = 0
+        if stopOnResponseID == nil {
+            closeInput()
+        } else {
+            // RPC servers need stdin to remain open until their reply arrives.
+            // Suspend the writable event to avoid spinning on an empty request.
+            input.suspend(); inputSuspended = true
+        }
+    }
+    private func closeInput() {
+        guard let input else { return }
+        self.input = nil
+        input.cancel()
+        if inputSuspended { input.resume(); inputSuspended = false }
     }
     private func readOutput(_ data: Data) {
         guard !completed else { return }
-        guard !data.isEmpty else { outputEnded = true; output.fileHandleForReading.readabilityHandler = nil; completeIfExited(); return }
+        guard !data.isEmpty else { outputEnded = true; output = nil; completeIfExited(); return }
         stdout.append(data)
         if stdout.count > 1_048_576 { finish(.failure(DeskKitError.message("数据源输出超过 1 MB。"))); return }
         if let target = stopOnResponseID {
@@ -82,20 +220,26 @@ final class CommandJob: @unchecked Sendable {
     }
     private func readError(_ data: Data) {
         guard !completed else { return }
-        if data.isEmpty { errorsEnded = true; errors.fileHandleForReading.readabilityHandler = nil; completeIfExited(); return }
+        if data.isEmpty { errorsEnded = true; errors = nil; completeIfExited(); return }
         if stderr.count < 4096 { stderr.append(data.prefix(4096 - stderr.count)) }
     }
     private func completeIfExited() {
-        guard outputEnded, errorsEnded, let status = exitStatus else { return }
+        guard !completed, outputEnded, errorsEnded, let status = exitStatus else { return }
         finish(.success(ProcessOutput(data: stdout, errors: String(data: stderr, encoding: .utf8) ?? "", status: status)))
     }
     private func finish(_ result: Result<ProcessOutput, Error>) {
-        guard !completed else { return }; completed = true; timeout?.cancel(); process.terminationHandler = nil
-        output.fileHandleForReading.readabilityHandler = nil; errors.fileHandleForReading.readabilityHandler = nil
+        guard !completed else { return }; completed = true
+        timeout?.cancel(); timeout = nil; process.terminationHandler = nil
+        output?.cancel(); output = nil
+        errors?.cancel(); errors = nil
+        closeInput(); request = Data()
         if process.isRunning { process.terminate(); let pid = process.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [process] in if process.isRunning { kill(pid, SIGKILL) } }
         }
-        let callback = continuation; continuation = nil; callback?.resume(with: result)
+        let callback = continuation; continuation = nil
+        // The cancel handlers above close the parent pipe ends before the caller
+        // is resumed. All teardown paths (reply, EOF, timeout, failure) converge here.
+        ioCleanup.notify(queue: queue) { callback?.resume(with: result) }
     }
 }
 
